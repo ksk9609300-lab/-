@@ -108,37 +108,73 @@ const DEMO_TEMPLATES = [
 // [MODULE: HEAD/CONFIG END]
 // ============================================
 
-// Safe JSON retrieval from web requests to avoid "Unexpected token 'T', ... is not valid JSON" errors when servers are starting or experiencing transient failures
-async function safeFetchJson(response: Response): Promise<any> {
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    console.error("Non-JSON Response received:", text);
-    const lowercaseText = text.toLowerCase();
-    
-    // Check if the response contains signature server-starting or proxy/container error marks
-    if (
-      lowercaseText.includes("the page cannot") || 
-      lowercaseText.includes("restarting") || 
-      lowercaseText.includes("please wait") || 
-      lowercaseText.includes("starting") ||
-      lowercaseText.includes("starting up") ||
-      lowercaseText.includes("application starts")
-    ) {
-      throw new Error("현재 서버 환경의 업데이트 및 재기동이 최근 마무리 단계에 있습니다. 약 1~2초 후 단추를 다시 한번 클릭해 주시면 즉시 정상 가동 전형을 마칩니다.");
-    }
-    
-    if (response.status === 404) {
-      throw new Error("요청한 분석 주소가 올바르지 않거나 서버 빌드가 실시간 리로드 중(404)일 수 있습니다. 약 1초 후 새로고침 후 다시 시도해 주세요.");
-    }
-    
-    if (response.status >= 500) {
-      throw new Error(`구글 Gemini 실시간 트래픽 폭증 또는 서버 일시적 서비스 불가 오류가 발견되었습니다. (상태 코드: ${response.status}). 수 초 뒤 다시 한번 시도해 주십시오.`);
-    }
+// Self-healing fetch caller with automatic retry & progressive backoff to withstand server restarts/transient loads/404s/503s
+async function fetchWithRetry(url: string, options: RequestInit, retries = 4, delay = 1000): Promise<any> {
+  let lastError: any = null;
+  
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      
+      let data: any = null;
+      let isJson = false;
+      try {
+        data = JSON.parse(text);
+        isJson = true;
+      } catch (e) {
+        isJson = false;
+      }
+      
+      const lowercaseText = text.toLowerCase();
+      // Detect if container is restarting, deploying, or transient cloud loading pages are displayed
+      const isServerLoading = 
+        lowercaseText.includes("the page cannot") || 
+        lowercaseText.includes("restarting") || 
+        lowercaseText.includes("please wait") || 
+        lowercaseText.includes("starting") ||
+        lowercaseText.includes("starting up") ||
+        lowercaseText.includes("application starts") ||
+        lowercaseText.includes("loading") ||
+        lowercaseText.includes("cannot post") ||
+        lowercaseText.includes("unexpected token");
 
-    throw new Error(`원만한 통신 연결이 중단되었거나 부적절한 응답(상태 코드: ${response.status})이 들어왔습니다. 잠시만 기다려 주신 뒤 다시 실행 부탁드립니다.`);
+      const isTransientErrorStatus = response.status === 404 || response.status === 502 || response.status === 503 || response.status === 429;
+      
+      if ((isTransientErrorStatus || isServerLoading || !isJson) && i < retries) {
+        console.warn(`[서버 기동 통신 보정] 상태코드=${response.status}, JSON여부=${isJson}, 임시점검문구=${isServerLoading}. ${delay}ms 후 재연결 시도합니다...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay = delay * 1.5;
+        continue;
+      }
+      
+      if (!isJson) {
+        if (response.status === 404) {
+          throw new Error("서버 환경이 최적화 빌드 완료 단계에 진입 중(404)입니다. 약 1~2초 후 페이지 새로고침을 하거나 단추를 다시 클릭해 주세요.");
+        }
+        if (response.status >= 500) {
+          throw new Error("Gemini AI 실시간 서버 트래픽이 몰려 응답이 차단되었습니다. 수 초 뒤 다시 한번 단추를 클릭해 주세요.");
+        }
+        throw new Error(`원만한 통신 연결이 일시적으로 중단되었습니다. (상태 코드: ${response.status}) 잠시 후 다시 클릭해 주십시오.`);
+      }
+      
+      if (!response.ok) {
+        throw new Error(data.error || "분석 과정 중 특이 보고서 에러가 확인되었습니다.");
+      }
+      
+      return data;
+    } catch (err: any) {
+      lastError = err;
+      if (i < retries) {
+        console.warn(`[통신 보정 재검색] 에러=${err.message || err}. ${delay}ms 후 재시도...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay = delay * 1.5;
+        continue;
+      }
+    }
   }
+  
+  throw lastError || new Error("서버의 초기 응답 지연이 이어지고 있습니다. 페이지를 새로고침 하시거나 잠시 뒤 재검증해 주십시오.");
 }
 
 export default function App() {
@@ -225,7 +261,7 @@ export default function App() {
         }
 
         // 3. Invoke /api/extract
-        const res = await fetch("/api/extract", {
+        const data = await fetchWithRetry("/api/extract", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -239,10 +275,6 @@ export default function App() {
           })
         });
 
-        const data = await safeFetchJson(res);
-        if (!res.ok) {
-          throw new Error(data.error || `${file.name} 추출 프로세스에서 에러가 보고되었습니다.`);
-        }
         const extractedText = data.text || "";
 
         const fileId = Math.random().toString(36).substring(2, 9);
@@ -302,18 +334,13 @@ export default function App() {
     setKeyValidationSuccess(null);
 
     try {
-      const response = await fetch("/api/validate-key", {
+      const data = await fetchWithRetry("/api/validate-key", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ apiKey: userApiKey }),
       });
-
-      const data = await safeFetchJson(response);
-      if (!response.ok) {
-        throw new Error(data.error || "구글 Gemini 서버로부터 API 키의 승인을 받지 못했습니다.");
-      }
 
       if (data.valid) {
         setIsKeyValidated(true);
@@ -369,7 +396,7 @@ export default function App() {
     setAnalysisResult(null);
 
     try {
-      const response = await fetch("/api/analyze", {
+      const data = await fetchWithRetry("/api/analyze", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -383,10 +410,6 @@ export default function App() {
         }),
       });
 
-      const data = await safeFetchJson(response);
-      if (!response.ok) {
-        throw new Error(data.error || "분석 네트워크 처리 중 장애가 발생했습니다.");
-      }
       setAnalysisResult(data);
     } catch (err: any) {
       console.error(err);
@@ -626,7 +649,10 @@ export default function App() {
                           type={showKeyText ? "text" : "password"}
                           value={userApiKey}
                           onChange={(e) => {
-                            setUserApiKey(e.target.value);
+                            let cleanedKey = e.target.value.trim();
+                            // Strip any accidental wrapping quotes, double quotes, backticks, or square brackets
+                            cleanedKey = cleanedKey.replace(/^["'`\[\]]+|["'`\[\]]+$/g, "");
+                            setUserApiKey(cleanedKey);
                             setIsKeyValidated(false); // require re-verification upon change
                             localStorage.removeItem("user_gemini_api_key_valid");
                           }}
