@@ -133,7 +133,7 @@ app.post("/api/extract", async (req, res) => {
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: [
         {
           inlineData: {
@@ -179,7 +179,7 @@ app.post("/api/validate-key", async (req, res) => {
 
     // Try a simple, ultra-fast test prompt
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: "API key verification check. Please respond with exactly the single word: VALID",
       config: {
         maxOutputTokens: 5,
@@ -297,7 +297,7 @@ ${sanitizedIntro}
 
     // Call Gemini with Structured JSON Schema
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: userPrompt,
       config: {
         systemInstruction,
@@ -480,25 +480,30 @@ ${sanitizedIntro}
   }
 });
 
-// Configure Vite middleware in development
-if (process.env.NODE_ENV !== "production") {
-  createViteServer({
-    server: { middlewareMode: true },
-    appType: "spa",
-  }).then((vite) => {
+// Sequential Bootstrap Loader to prevent early request race conditions (404 errors)
+async function bootstrap() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
     app.use(vite.middlewares);
     console.log("Vite development middleware activated.");
-  });
-} else {
-  // Static build server for Cloud Run production
-  const distPath = path.join(process.cwd(), "dist");
-  app.use(express.static(distPath));
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(distPath, "index.html"));
+  } else {
+    // Static build server for Cloud Run production
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  // Start actual listener ONLY after middlewares are fully attached
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening at http://0.0.0.0:${PORT} under environment: ${process.env.NODE_ENV || 'development'}`);
   });
 }
 
-// Start actual listener
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server listening at http://0.0.0.0:${PORT} under environment: ${process.env.NODE_ENV || 'development'}`);
+bootstrap().catch((err) => {
+  console.error("Failed to bootstrap the server safely:", err);
 });
