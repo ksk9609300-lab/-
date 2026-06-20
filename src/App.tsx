@@ -108,6 +108,39 @@ const DEMO_TEMPLATES = [
 // [MODULE: HEAD/CONFIG END]
 // ============================================
 
+// Safe JSON retrieval from web requests to avoid "Unexpected token 'T', ... is not valid JSON" errors when servers are starting or experiencing transient failures
+async function safeFetchJson(response: Response): Promise<any> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    console.error("Non-JSON Response received:", text);
+    const lowercaseText = text.toLowerCase();
+    
+    // Check if the response contains signature server-starting or proxy/container error marks
+    if (
+      lowercaseText.includes("the page cannot") || 
+      lowercaseText.includes("restarting") || 
+      lowercaseText.includes("please wait") || 
+      lowercaseText.includes("starting") ||
+      lowercaseText.includes("starting up") ||
+      lowercaseText.includes("application starts")
+    ) {
+      throw new Error("현재 서버 환경의 업데이트 및 재기동이 최근 마무리 단계에 있습니다. 약 1~2초 후 단추를 다시 한번 클릭해 주시면 즉시 정상 가동 전형을 마칩니다.");
+    }
+    
+    if (response.status === 404) {
+      throw new Error("요청한 분석 주소가 올바르지 않거나 서버 빌드가 실시간 리로드 중(404)일 수 있습니다. 약 1초 후 새로고침 후 다시 시도해 주세요.");
+    }
+    
+    if (response.status >= 500) {
+      throw new Error(`구글 Gemini 실시간 트래픽 폭증 또는 서버 일시적 서비스 불가 오류가 발견되었습니다. (상태 코드: ${response.status}). 수 초 뒤 다시 한번 시도해 주십시오.`);
+    }
+
+    throw new Error(`원만한 통신 연결이 중단되었거나 부적절한 응답(상태 코드: ${response.status})이 들어왔습니다. 잠시만 기다려 주신 뒤 다시 실행 부탁드립니다.`);
+  }
+}
+
 export default function App() {
   // Application Inputs State
   const [jobPosting, setJobPosting] = useState<string>(DEMO_TEMPLATES[0].jobPosting);
@@ -206,12 +239,10 @@ export default function App() {
           })
         });
 
+        const data = await safeFetchJson(res);
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || `${file.name} 추출 프로세스에서 에러가 보고되었습니다.`);
+          throw new Error(data.error || `${file.name} 추출 프로세스에서 에러가 보고되었습니다.`);
         }
-
-        const data = await res.json();
         const extractedText = data.text || "";
 
         const fileId = Math.random().toString(36).substring(2, 9);
@@ -279,7 +310,7 @@ export default function App() {
         body: JSON.stringify({ apiKey: userApiKey }),
       });
 
-      const data = await response.json();
+      const data = await safeFetchJson(response);
       if (!response.ok) {
         throw new Error(data.error || "구글 Gemini 서버로부터 API 키의 승인을 받지 못했습니다.");
       }
@@ -352,12 +383,10 @@ export default function App() {
         }),
       });
 
+      const data = await safeFetchJson(response);
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "분석 네트워크 처리 중 장애가 발생했습니다.");
+        throw new Error(data.error || "분석 네트워크 처리 중 장애가 발생했습니다.");
       }
-
-      const data = await response.json();
       setAnalysisResult(data);
     } catch (err: any) {
       console.error(err);
