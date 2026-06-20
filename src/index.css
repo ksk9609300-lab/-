@@ -1,0 +1,25 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Apple SD Gothic Neo", "Noto Sans KR", Arial, sans-serif;
+  
+  /* Custom Palette based on Onboarding Presentation Deck of the image */
+  --color-[#D4E2D9]: #D4E2D9;
+  --color-[#1C3F24]: #1C3F24;
+  --color-[#E2EF37]: #E2EF37;
+  --color-[#F4F6F4]: #F4F6F4;
+  --color-[#E8ECEA]: #E8ECEA;
+  --color-[#2A5235]: #2A5235;
+}
+
+@layer utilities {
+  .folder-tab-clip {
+    clip-path: polygon(0 0, 92% 0, 100% 100%, 0% 100%);
+  }
+}
+
+body {
+  background-color: #E2EAE4;
+  font-family: var(--font-sans);
+}
